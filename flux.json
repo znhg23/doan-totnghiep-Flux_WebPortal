@@ -1,0 +1,38 @@
+{
+    "flux-knIVmi": {
+        "id": 0,
+        "status": "ready",
+        "pid": 8454,
+        "details": {
+            "number_of_cores": 4,
+            "memory": 16
+        }
+    },
+    "flux-iQkjD2": {
+        "id": 1,
+        "status": "ready",
+        "pid": 8548,
+        "details": {
+            "number_of_cores": 4,
+            "memory": 16
+        }
+    },
+    "flux-OUxI8r": {
+        "id": 2,
+        "status": "ready",
+        "pid": 8830,
+        "details": {
+            "number_of_cores": 4,
+            "memory": 16
+        }
+    },
+    "flux-wXnFFq": {
+        "id": 3,
+        "status": "ready",
+        "pid": 8924,
+        "details": {
+            "number_of_cores": 4,
+            "memory": 16
+        }
+    }
+}
