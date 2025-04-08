@@ -4,8 +4,10 @@ import json
 import flux
 import flask
 import re
+from flux.job import JobspecV1, JobInfo
 
 PWD = os.getcwd()
+INPUT_DIR = f'{PWD}/input'
 FLUX_JSON = f'{PWD}/flux.json'
 MODIFY_FLUX_JSON_SCRIPT = f'{PWD}/modifyNodeJson.py'
 FLUX_INSTANCE_REGEX = r"flux-[a-zA-Z0-9\-]+"
@@ -18,6 +20,18 @@ def checkFluxInstanceExists(fluxInstance):
     else:
         return False
     
+def convertFluxInstanceToFluxUri(fluxInstance):
+    return f"local:///tmp/{fluxInstance}/local-0"
+    
+def connectToFluxInstance(fluxInstance):
+    # Connect to the flux instance
+    fluxUri = convertFluxInstanceToFluxUri(fluxInstance)
+    try:
+        handle = flux.Flux(fluxUri)
+        return handle
+    except Exception as e:
+        print(f"Error connecting to flux instance {fluxInstance}: {e}")
+        return None
 
 def startNewFluxInstanceThenSleep():
     
@@ -169,22 +183,154 @@ def getFluxInstance(fluxInstance):
     
     return flask.jsonify(fluxInstanceInfo), 200
 
-@app.route('/flux/<fluxInstance>/resource', methods=['GET'])
-def getFluxInstanceResource(fluxInstance):
-    """Get the resource usage of a specific flux instance."""
+# @app.route('/flux/<fluxInstance>/resource', methods=['GET'])
+# def getFluxInstanceResource(fluxInstance):
+#     """Get the resource usage of a specific flux instance."""
+#     """
+#     output:
+#     {
+#         "fluxInstance": {
+#             "cpu": 10,
+#             "memory": 2048
+#         }
+#     }
+#     """
+#     # Get the flux instance information
+#     fluxInstanceInfo = getFluxInstanceInfo(fluxInstance)
+#     return flask.jsonify(fluxInstanceInfo), 200
+
+@app.route('/flux/<fluxInstance>/job/command', methods=['POST'])
+def submitJobWithCommand(fluxInstance):
+    """Submit a job to a specific flux instance."""
     """
-    output:
+    input:
     {
-        "fluxInstance": {
-            "cpu": 10,
-            "memory": 2048
+        "cores": 4,
+        "requirements": "requirements.txt",
+        "job": {
+            "command": [
+                "bash",
+                "./input/test.sh"
+            ],
+            "script": [
+                "./input/test.sh"
+            ],
+            "data": [
+                "./input/data.csv"
+            ],
         }
     }
     """
+    
     # Get the flux instance information
     fluxInstanceInfo = getFluxInstanceInfo(fluxInstance)
-    return flask.jsonify(fluxInstanceInfo), 200
+    
+    if fluxInstanceInfo is None:
+        return flask.jsonify({"error": "fluxInstance does not exist"}), 404
+    
+    jsonData = flask.request.get_json()
+    
+    if not jsonData:
+        return flask.jsonify({"error": "Invalid request"}), 400
+    
+    job = jsonData['job']
+    
+    if not job:
+        return flask.jsonify({"error": "job is required"}), 400
+    
+    # Connect to the flux instance and submit the job
+    handle = connectToFluxInstance(fluxInstance)
+    if handle is None:
+        return flask.jsonify({"error": "Failed to connect to flux instance"}), 500
+    try:
+        if job['command'] is not None:
+            command = job['command']
+            jobspec = JobspecV1.from_command(command)
+            
+        jobspec.cwd = PWD
+        jobspec.environment = dict(os.environ)
+            
+        jobId = flux.job.submit(handle, jobspec)
+        return flask.jsonify({"jobId": jobId}), 200
+    except Exception as e:
+        return flask.jsonify({"error": str(e)}), 500
+
+@app.route('/flux/<fluxInstance>/job/script', methods=['POST'])
+def submitJobWithScript(fluxInstance):
+    """Submit a job to a specific flux instance."""
+    """
+    input:
+    data type: binary
+    """
+    
+    # Get the flux instance information
+    fluxInstanceInfo = getFluxInstanceInfo(fluxInstance)
+    if fluxInstanceInfo is None:
+        return flask.jsonify({"error": "fluxInstance does not exist"}), 404
+    # Get the job script from the request
+    if 'file' not in flask.request.files:
+        return flask.jsonify({'error': 'No file part'}), 400
+    
+    jobScript = flask.request.files['file']
+    
+    # Check if file was selected
+    if jobScript.filename == '':
+        return flask.jsonify({'error': 'No selected file'}), 400
+
+    # Save the job script to a temporary file
+    jobScriptPath = os.path.join(INPUT_DIR, 'temp_job_script.sh')
+    
+    if jobScript:
+        jobScript.save(jobScriptPath)
+    
+    # Connect to the flux instance and submit the job
+    handle = connectToFluxInstance(fluxInstance)
+    if handle is None:
+        return flask.jsonify({"error": "Failed to connect to flux instance"}), 500
+    try:
+        # Create a jobspec from the job script
+        print(jobScriptPath)
+        jobspec = JobspecV1.from_command(command=[jobScriptPath])
+        jobspec.cwd = PWD
+        jobspec.environment = dict(os.environ)
+        
+        jobId = flux.job.submit(handle, jobspec)
+        return flask.jsonify({"jobId": jobId}), 200
+    except Exception as e:
+        return flask.jsonify({"error": str(e)}), 500
+
+@app.route('/flux/<fluxInstance>/job/<jobID>/result', methods=['GET'])
+def getJobResult(fluxInstance, jobID):
+    """Get the result of a specific job."""
+    """
+    output:
+    {
+        "jobID": <job_id>,
+        "result": {
+            "stdout": <stdout>,
+            "stderr": <stderr>
+        }
+    }
+    """
+    
+    # Get the flux instance information
+    fluxInstanceInfo = getFluxInstanceInfo(fluxInstance)
+    
+    if fluxInstanceInfo is None:
+        return flask.jsonify({"error": "fluxInstance does not exist"}), 404
+    
+    # Connect to the flux instance and get the job result
+    handle = connectToFluxInstance(fluxInstance)
+    if handle is None:
+        return flask.jsonify({"error": "Failed to connect to flux instance"}), 500
+    
+    try:
+        jobResult = flux.job.result(handle, jobID).result
+        return flask.jsonify({"jobID": jobID, "result": jobResult}), 200
+    except Exception as e:
+        return flask.jsonify({"error": str(e)}), 500
 
 # Host the server at port 8080
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080)
+    subprocess.run(f"sudo chmod 777 -R {PWD}", shell=True)

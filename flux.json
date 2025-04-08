@@ -1,35 +1,170 @@
 {
-    "flux-knIVmi": {
+    "flux-k1Prnw": {
         "id": 0,
         "status": "ready",
-        "pid": 8454,
+        "pid": 1706,
         "details": {
             "number_of_cores": 4,
             "memory": 16
         }
     },
-    "flux-iQkjD2": {
+    "flux-U8iOP9": {
         "id": 1,
         "status": "ready",
-        "pid": 8548,
+        "pid": 1809,
         "details": {
             "number_of_cores": 4,
             "memory": 16
         }
     },
-    "flux-OUxI8r": {
+    "flux-FihNox": {
         "id": 2,
         "status": "ready",
-        "pid": 8830,
+        "pid": 1023,
         "details": {
             "number_of_cores": 4,
             "memory": 16
         }
     },
-    "flux-wXnFFq": {
+    "flux-4BpRiM": {
         "id": 3,
         "status": "ready",
-        "pid": 8924,
+        "pid": 1403,
+        "details": {
+            "number_of_cores": 4,
+            "memory": 16
+        }
+    },
+    "flux-TffE4Y": {
+        "id": 4,
+        "status": "ready",
+        "pid": 1504,
+        "details": {
+            "number_of_cores": 4,
+            "memory": 16
+        }
+    },
+    "flux-JxRJTT": {
+        "id": 5,
+        "status": "ready",
+        "pid": 1603,
+        "details": {
+            "number_of_cores": 4,
+            "memory": 16
+        }
+    },
+    "flux-AbuooJ": {
+        "id": 6,
+        "status": "ready",
+        "pid": 1702,
+        "details": {
+            "number_of_cores": 4,
+            "memory": 16
+        }
+    },
+    "flux-xYn1KO": {
+        "id": 7,
+        "status": "ready",
+        "pid": 1802,
+        "details": {
+            "number_of_cores": 4,
+            "memory": 16
+        }
+    },
+    "flux-gxPaDi": {
+        "id": 8,
+        "status": "ready",
+        "pid": 1901,
+        "details": {
+            "number_of_cores": 4,
+            "memory": 16
+        }
+    },
+    "flux-HOqH5Y": {
+        "id": 9,
+        "status": "ready",
+        "pid": 2214,
+        "details": {
+            "number_of_cores": 4,
+            "memory": 16
+        }
+    },
+    "flux-mPSuYA": {
+        "id": 10,
+        "status": "ready",
+        "pid": 2314,
+        "details": {
+            "number_of_cores": 4,
+            "memory": 16
+        }
+    },
+    "flux-1WLENq": {
+        "id": 11,
+        "status": "ready",
+        "pid": 2463,
+        "details": {
+            "number_of_cores": 4,
+            "memory": 16
+        }
+    },
+    "flux-cQOsfm": {
+        "id": 12,
+        "status": "ready",
+        "pid": 2561,
+        "details": {
+            "number_of_cores": 4,
+            "memory": 16
+        }
+    },
+    "flux-Vhb7W5": {
+        "id": 13,
+        "status": "ready",
+        "pid": 2659,
+        "details": {
+            "number_of_cores": 4,
+            "memory": 16
+        }
+    },
+    "flux-My3UsL": {
+        "id": 14,
+        "status": "ready",
+        "pid": 2757,
+        "details": {
+            "number_of_cores": 4,
+            "memory": 16
+        }
+    },
+    "flux-BuQUJc": {
+        "id": 15,
+        "status": "ready",
+        "pid": 2861,
+        "details": {
+            "number_of_cores": 4,
+            "memory": 16
+        }
+    },
+    "flux-RDzFsb": {
+        "id": 16,
+        "status": "ready",
+        "pid": 2967,
+        "details": {
+            "number_of_cores": 4,
+            "memory": 16
+        }
+    },
+    "flux-f9n33h": {
+        "id": 17,
+        "status": "ready",
+        "pid": 3070,
+        "details": {
+            "number_of_cores": 4,
+            "memory": 16
+        }
+    },
+    "flux-GoVHbz": {
+        "id": 18,
+        "status": "ready",
+        "pid": 3337,
         "details": {
             "number_of_cores": 4,
             "memory": 16
