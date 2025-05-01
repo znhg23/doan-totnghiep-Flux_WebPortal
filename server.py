@@ -1,7 +1,6 @@
 import os
 import subprocess
 import json
-import flux
 import flask
 import re
 import shutil
@@ -9,494 +8,339 @@ import io
 import concurrent.futures
 import time
 import zipfile
-from flux.job import JobspecV1, JobInfo
+import pymongo
+import database
 
 PWD = os.getcwd()
-FLUX_JSON = f'{PWD}/flux.json'
-MODIFY_FLUX_JSON_SCRIPT = f'{PWD}/modifyNodeJson.py'
-FLUX_INSTANCE_REGEX = r"flux-[a-zA-Z0-9\-]+"
 
 #########################################
 # UTILITIES FUNCTIONS
 #########################################
 
-def saveFluxStreamOutputToFile(fluxInstance, jobID):
+def saveFluxStreamOutputToFile(jobID):
     """
-        This function is used to save the stream output of a flux job to a file.
-        For example, if the job prints "Hello, world!" to the console, this function will save "Hello, world!" to a file.
-        Because the flux library does not provide a way to get the console output, we need to use a workaround by connecting
-        to the flux instance via an interactive shell by exporting the FLUX_URI, then run the command `flux job attach <jobID>`.
+    Save the stream output of a flux job to a file.
     """
-    fluxUri = convertFluxInstanceToFluxUri(fluxInstance)
-    # Move to the job directory
-    os.chdir(f"{PWD}/{fluxInstance}/{jobID}")
+    job = getSpecificFluxJob(jobID)
+    dirName = job.get('cwd')
     
-    newShell = subprocess.Popen(f"export FLUX_URI={fluxUri}; flux job attach {jobID}", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    # Move to the job directory
+    os.chdir(dirName)
+    
+    result = subprocess.run(f"flux job attach {jobID}", shell=True, capture_output=True, text=True)
     
     # Save the stdout to a output_stream.txt file
     with open('output_stream.txt', 'w') as f:
-        for line in newShell.stdout:
-            f.write(line)
+        f.write(result.stdout)
             
     # Save the stderr to a error_stream.txt file
     with open('error_stream.txt', 'w') as f:
-        for line in newShell.stderr:
-            f.write(line)
+        f.write(result.stderr)
         
-def getFluxResource(fluxInstance):
-    """
-    This function is used to get the resource information of a flux instance.
-    It runs the 'flux resource list' command and parses the output to return a JSON object.
-    """
-    fluxUri = convertFluxInstanceToFluxUri(fluxInstance)
-    
-    # Create a temporary directory for the output
-    tempDir = f"{PWD}/{fluxInstance}/temp_resource"
-    os.makedirs(tempDir, exist_ok=True)
-    os.chdir(tempDir)
-    
-    # Run the flux resource list command
-    newShell = subprocess.Popen(f"export FLUX_URI={fluxUri}; flux resource list", 
-                               shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    
-    # Save the stdout to a resource_list.txt file
-    with open('resource_list.txt', 'w') as f:
-        for line in newShell.stdout:
-            f.write(line)
-    
-    # Read the resource list file
-    with open('resource_list.txt', 'r') as f:
-        lines = f.readlines()
-    
-    # Parse the output
-    resource_info = {
-        "nodes": {"free": 0, "allocated": 0, "down": 0},
-        "cores": {"free": 0, "allocated": 0, "down": 0},
-        "gpus": {"free": 0, "allocated": 0, "down": 0},
-        "nodelist": []
-    }
-    
-    # Skip the header line
-    for line in lines[1:]:
-        parts = line.strip().split()
-        if len(parts) >= 5:  # Make sure we have enough parts
-            state = parts[0]
-            if state in ["free", "allocated", "down"]:
-                resource_info["nodes"][state] = int(parts[1])
-                resource_info["cores"][state] = int(parts[2])
-                resource_info["gpus"][state] = int(parts[3])
-                
-                # Add nodelist only for free nodes
-                if state == "free" and parts[4] != "-":
-                    resource_info["nodelist"] = parts[4].split(',')
-    
-    # Clean up
     os.chdir(PWD)
-    shutil.rmtree(tempDir)
-    
-    return resource_info
+        
+def getFluxOverlayStatus():
+    """
+    Get the overlay status of the Flux handle.
+    """
+    result = subprocess.run("flux overlay status", shell=True, capture_output=True, text=True)
+    return result.stdout
 
-def checkFluxInstanceExists(fluxInstance):
-    with open(FLUX_JSON, 'r') as f:
-        node_data = json.load(f)
-    if fluxInstance in node_data:
-        return True
-    else:
-        return False
-    
-def convertFluxInstanceToFluxUri(fluxInstance):
-    return f"local:///tmp/{fluxInstance}/local-0"
-    
-def connectToFluxInstance(fluxInstance):
-    # Connect to the flux instance
-    fluxUri = convertFluxInstanceToFluxUri(fluxInstance)
+def getFluxNodes():
+    """
+    Get all nodes known to the Flux handle.
+    """
     try:
-        handle = flux.Flux(fluxUri)
-        return handle
-    except Exception as e:
-        print(f"Error connecting to flux instance {fluxInstance}: {e}")
-        return None
-
-def startNewFluxInstanceThenSleep(nodes):
-    
-    nodeSize = ""
-    if nodes is not None:
-        nodeSize = f"-s{nodes}"
-    else:
-        nodes = 1
-        
-    
-    initialProgramCommand = f"sudo chmod 777 -R {PWD}; echo $$ > {PWD}/test.txt; python3 {MODIFY_FLUX_JSON_SCRIPT} --add $FLUX_URI --pid $$; sleep inf"  # TODO: modify permission for security
-    # Start the Flux shell
-    process = subprocess.Popen(f"flux start {nodeSize} '{initialProgramCommand}'", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    
-    if process.stdout:
-        line = process.stdout.readline()
-        if line.startswith("Added:"):
-            fluxInstance = re.search(FLUX_INSTANCE_REGEX, line)[0]
-        print(line) 
-        
-    # Create a new directory for the flux instance
-    os.makedirs(f"{PWD}/{fluxInstance}", exist_ok=True)
-    return fluxInstance
-
-def getFluxInstanceInfo(fluxInstance):
-    with open(FLUX_JSON, 'r') as f:
-        node_data = json.load(f)
-        # Get the flux instance information
-        if checkFluxInstanceExists(fluxInstance):
-            fluxInstanceInfo = { fluxInstance: node_data[fluxInstance] }
-            fluxInstanceInfo[fluxInstance]["resource"] = getFluxResource(fluxInstance)
+        data = database.get_all_flux_nodes()
             
-            if fluxInstanceInfo[fluxInstance]["resource"]["nodes"]["free"] > 0:
-                fluxInstanceInfo[fluxInstance]["status"] = "ready"
-            else:
-                fluxInstanceInfo[fluxInstance]["status"] = "busy"
-        else:
-            return None
-    return fluxInstanceInfo
+        return data
+    except Exception as e:
+        print(f"Error getting nodes information: {e}")
+        return []
 
-def getAllFluxInstancesInfo():
-    with open(FLUX_JSON, 'r') as f:
-        node_data = json.load(f)
-        fluxInstancesInfo = []
-        for fluxInstance in node_data:
-            fluxInstanceInfo = getFluxInstanceInfo(fluxInstance)
-            fluxInstancesInfo.append(fluxInstanceInfo)
-    return fluxInstancesInfo
+def convertF58toDecimal(jobID):
+    """
+    Convert a Flux job ID from F58 format to decimal format.
+    """
+    conversion = subprocess.run(f"flux job id {jobID}", shell=True, capture_output=True, text=True)
+    return conversion.stdout.rstrip('\n')
     
-
-
+def getSpecificFluxNode(node):
+    """
+    Get a specific node from the Flux handle.
+    """
+    try:
+        data = database.get_flux_node(node)
+        return data
+    except Exception as e:
+        print(f"Error getting node information: {e}")
+        return None
+    
+def getFluxJobs():
+    """
+    Get all jobs known to the Flux handle.
+    """
+    try:
+        data = database.get_all_flux_jobs()
+        return data
+    except Exception as e:
+        print(f"Error getting jobs information: {e}")
+        return []
+    
+def getSpecificFluxJob(jobID):
+    """
+    Get a specific job from the Flux handle.
+    """
+    try:
+        data = database.get_flux_job(jobID)
+        return data
+    except Exception as e:
+        print(f"Error getting job information: {e}")
+        return None
+    
+def submitFluxJob(jobName, jobCommand, dirName, options):
+    """
+    Submit a job to the Flux handle.
+    """
+    try:
+        nodes = f"-N {options.get('nodes', 1)}" if options.get('nodes', None) else ""
+        
+        # Per resource options
+        cores = f"--cores={options.get('cores', 6)}" if options.get('cores', None) else ""
+        tasks_per_node = f"--tasks-per-node={options.get('tasks-per-node', 1)}" if options.get('tasks-per-node', None) else ""
+        tasks_per_core = f"--tasks-per-core={options.get('tasks-per-core', 1)}" if options.get('tasks-per-core', None) else ""
+        
+        # Per task options
+        cores_per_task = f"-c {options.get('cores_per_task', 2)}" if options.get('cores_per_task', None) else ""
+        gpus_per_task = f"-g {options.get('gpus-per-task', 1)}" if options.get('gpus-per-task', None) else ""
+        ntasks = f"-n {options.get('ntasks', 1)}" if options.get('ntasks', None) else ""
+        
+        os.makedirs(f"{PWD}/data/{dirName}", exist_ok=True)
+        os.chdir(f"{PWD}/data/{dirName}")
+        
+        result = subprocess.run(f"flux submit --job-name={jobName} {nodes} {cores_per_task} {gpus_per_task} {ntasks} {cores} {tasks_per_node} {tasks_per_core} {jobCommand}", shell=True, capture_output=True, text=True)
+        os.chdir(PWD)
+        return result.stdout, result.stderr
+    except Exception as e:
+        print(f"Error submitting job: {e}")
+        return None, str(e)
+    
+def uploadFiles(dirName, files):
+    """
+    Upload files to the /data directory.
+    """
+    try:
+        # Create a new directory for the files
+        os.makedirs(f"{PWD}/data/{dirName}", exist_ok=True)
+        
+        # Handle single file or multiple files
+        if not isinstance(files, list):
+            files = [files]
+            
+        # Save the files to the directory   
+        for file in files:
+            if file and file.filename:
+                file_path = os.path.join(f"{PWD}/data/{dirName}", file.filename)
+                file.save(file_path)
+            
+        return f"Uploaded {len(files)} files to {dirName} directory"
+    except Exception as e:
+        print(f"Error uploading files: {e}")
+        raise Exception(f"Error uploading files: {e}")
+    
+def downloadFiles(jobID):
+    """
+    Download files from the /data/<dirName> directory as zip file.
+    """
+    try:
+        saveFluxStreamOutputToFile(jobID)
+        
+        job = getSpecificFluxJob(jobID)
+        dirName = job.get('cwd')
+        
+        # Get the base directory name
+        base_dir = os.path.basename(dirName)
+        
+        # Create a zip file
+        with zipfile.ZipFile(f"{base_dir}.zip", 'w') as zipf:
+            for file in os.listdir(dirName):
+                file_path = os.path.join(dirName, file)
+                # Add file to zip with just the filename (no path)
+                zipf.write(file_path, file)
+                
+        return f"{base_dir}.zip"
+    except Exception as e:
+        print(f"Error downloading files: {e}")
+        raise Exception(f"Error downloading files: {e}")
+    
+def deleteFiles(dirName):
+    """
+    Delete files from the /data/<dirName> directory.
+    """
+    try:
+        shutil.rmtree(f"{PWD}/data/{dirName}")
+        return f"Deleted {dirName} directory"
+    except Exception as e:
+        print(f"Error deleting files: {e}")
+        raise Exception(f"Error deleting files: {e}")
+    
+def showTree(dirName):
+    """
+    Show the tree of the cwd of a directory.
+    """
+    try:
+        result = subprocess.run(f"tree -lah {PWD}/data/{dirName}", shell=True, capture_output=True, text=True)
+        
+        if result.stderr:
+            raise Exception(f"Error showing tree: {result.stderr}")
+        
+        return result.stdout
+    except Exception as e:
+        raise Exception(f"Error showing tree: {e}")
+    
+def showFluxOverlayStatus():
+    """
+    Show the overlay status of the Flux handle.
+    """
+    try:
+        result = subprocess.run("flux overlay status", shell=True, capture_output=True, text=True)
+        return result.stdout
+    except Exception as e:
+        raise Exception(f"Error showing overlay status: {e}")
+    
 ########################################
 # APIs for the web portal
 ########################################
     
 # Start the server at port 8080 then receive requests to process
 app = flask.Flask(__name__)
-@app.route('/flux', methods=['POST'])
-def startFlux():
-    """Start a new flux instance with optional configs and return the instance ID and details."""
+@app.route('/flux/drain', methods=['PUT'])
+def drainFlux():
+    """Drain (Disable) a flux node."""
     """
     output:
     {
-        "fluxInstance": <flux_instance_id>,
-        "status": "ready",
-        "pid": <pid>
-        "details": {
-            "number_of_cores": 4,
-            "memory": 16
-        }
+        "message": "Drained node successfully"
     }
     """
     
-    if flask.request.args.get('nodes') is not None:
-        nodes = flask.request.args.get('nodes')
-    else:
-        nodes = None
+    node = flask.request.get_json().get('hostname')
     
-    # Start a new flux instance
-    fluxInstance = startNewFluxInstanceThenSleep(nodes)
-    print(fluxInstance)
-    with open(FLUX_JSON, 'r') as f:
-        node_data = json.load(f)
-        # Get the flux instance information
-        if checkFluxInstanceExists(fluxInstance):
-            fluxInstanceInfo = getFluxInstanceInfo(fluxInstance)
-        else:
-            return flask.jsonify({"error": "Failed to start a new instance"}), 404
+    result = subprocess.run(f"flux resource drain {node}", shell=True, capture_output=True, text=True)
     
-    return flask.jsonify(fluxInstanceInfo), 200
+    if result.stderr:
+        return flask.jsonify({"error": result.stderr}), 500
+    
+    return flask.jsonify({"message": "Drained node successfully"}), 200
 
-@app.route('/flux', methods=['DELETE'])
-def stopFlux():
-    """Stop a flux instance and remove it from the node.json file, also remove the directory."""
-    """
-    input:
-    {
-        "fluxInstance": <flux_instance_id> // required
-    }
-    """
-    
+@app.route('/flux/undrain', methods=['PUT'])
+def undrainFlux():
+    """Undrain (Enable) a flux node."""
     """
     output:
     {
-        "message": "flux_instance_id removed successfully"
+        "message": "Undrained node successfully"
     }
     """
-    jsonData = flask.request.get_json()
     
-    if not jsonData:
-        return flask.jsonify({"error": "Invalid request"}), 400
+    node = flask.request.get_json().get('hostname')
     
-    fluxInstance = jsonData['fluxInstance']
+    result = subprocess.run(f"flux resource undrain {node}", shell=True, capture_output=True, text=True)
     
-    if not fluxInstance:
-        return flask.jsonify({"error": "fluxInstance is required"}), 400
+    if result.stderr:
+        return flask.jsonify({"error": result.stderr}), 500
     
-    fluxInstanceInfo = getFluxInstanceInfo(fluxInstance)
-    if fluxInstanceInfo is None:
-        return flask.jsonify({"error": "fluxInstance does not exist"}), 404
-    
-    # Stop the flux instance
-    subprocess.run(f"sudo kill -9 {fluxInstanceInfo[fluxInstance]['pid']}", shell=True)
-    
-    # Remove the flux instance from the node.json file
-    os.chdir(PWD)
-    subprocess.run(f"python3 {MODIFY_FLUX_JSON_SCRIPT} --remove {fluxInstance}", shell=True)
-    
-    # Remove the flux instance directory
-    shutil.rmtree(f"{PWD}/{fluxInstance}")
-    
-    return flask.jsonify({"message": f"{fluxInstance} removed successfully"}), 200
+    return flask.jsonify({"message": "Undrained node successfully"}), 200
 
-@app.route('/flux', methods=['GET'])
+@app.route('/flux/nodes', methods=['GET'])
 def getFluxInstances():
     """Get all flux instances and their details."""
     """
     output:
     {
-        "fluxInstances": {
-            "flux-1": {
-                "id": 0,
-                "status": "ready",
-                "pid": 1234,
-                "details": {
-                    "number_of_cores": 4,
-                    "memory": 16
-                }
+        "nodes": [
+            {
+                "hostname": "flux-1",
+                "role": "ready",
+                ...
             },
+            ...
+        ]
+    }
+    """
+    
+    fluxNodesInfo = getFluxNodes()
+    
+    if fluxNodesInfo is []:
+        return flask.jsonify({"error": "No flux nodes found"}), 500
+    
+    return flask.jsonify({"nodes": fluxNodesInfo}), 200
+
+@app.route('/flux/nodes/<hostname>', methods=['GET'])
+def getFluxNodeAPI(hostname):
+    """Get a specific flux node and its details."""
+    """
+    output:
+    {
+        "node": {
+            "hostname": "flux-1",
+            "role": "ready",
             ...
         }
     }
     """
     
-    fluxInstancesInfo = getAllFluxInstancesInfo()
-    
-    return flask.jsonify({"fluxInstances": fluxInstancesInfo}), 200
-
-@app.route('/flux/<fluxInstance>', methods=['GET'])
-def getFluxInstance(fluxInstance):
-    """Get a specific flux instance and its details."""
-    """
-    output:
-    {
-        "fluxInstance": {
-            "id": 0,
-            "status": "ready",
-            "pid": 1234,
-            "details": {
-                "number_of_cores": 4,
-                "memory": 16
-            }
-        }
-    }
-    """
-    
     # Get the flux instance information
-    fluxInstanceInfo = getFluxInstanceInfo(fluxInstance)
+    fluxNodeInfo = getSpecificFluxNode(hostname)
     
-    if fluxInstanceInfo is None:
-        return flask.jsonify({"error": "fluxInstance does not exist"}), 404
+    if fluxNodeInfo is None:
+        return flask.jsonify({"error": "fluxNode does not exist"}), 404
     
-    return flask.jsonify(fluxInstanceInfo), 200
+    return flask.jsonify(fluxNodeInfo), 200
 
-# @app.route('/flux/<fluxInstance>/resource', methods=['GET'])
-# def getFluxInstanceResource(fluxInstance):
-#     """Get the resource usage of a specific flux instance."""
-#     """
-#     output:
-#     {
-#         "fluxInstance": {
-#             "cpu": 10,
-#             "memory": 2048
-#         }
-#     }
-#     """
-#     # Get the flux instance information
-#     fluxInstanceInfo = getFluxInstanceInfo(fluxInstance)
-#     return flask.jsonify(fluxInstanceInfo), 200
-
-@app.route('/flux/<fluxInstance>/job/command', methods=['POST'])
-def submitJobWithCommand(fluxInstance):
-    """Submit a job to a specific flux instance."""
+@app.route('/flux/jobs', methods=['POST'])
+def submitJob():
+    """Submit a job to the Flux handle."""
     """
     input:
     {
-        "cores_per_task": 4,
-        "number_of_tasks": 1,
-        "number_of_nodes": 1,
-        "job": {
-            "command": [
-                "bash",
-                "./input/test.sh"
-            ]
+        "jobName": "job-1",
+        "jobCommand": "echo 'Hello, World!'",
+        "dirName": "job-1",
+        "options": {
+            "nodes": 1,
+            "cores": 4,
+            "tasks-per-node": 1,
+            "tasks-per-core": 1,
         }
     }
     """
     
-    # Get the flux instance information
-    fluxInstanceInfo = getFluxInstanceInfo(fluxInstance)
+    jobName = flask.request.get_json().get('jobName')
+    if jobName is None:
+        return flask.jsonify({"error": "Job name is required"}), 400
     
-    if fluxInstanceInfo is None:
-        return flask.jsonify({"error": "fluxInstance does not exist"}), 404
+    jobCommand = flask.request.get_json().get('jobCommand')
+    if jobCommand is None:
+        return flask.jsonify({"error": "Job command is required"}), 400
     
-    jsonData = flask.request.get_json()
+    dirName = flask.request.get_json().get('dirName')
+    if dirName is None:
+        return flask.jsonify({"error": "Directory name is required"}), 400
     
-    if not jsonData:
-        return flask.jsonify({"error": "Invalid request"}), 400
+    options = flask.request.get_json().get('options', {})
     
-    job = jsonData.get('job')
-    cores_per_task = jsonData.get('cores_per_task', 4)
-    number_of_tasks = jsonData.get('number_of_tasks', 1)
-    number_of_nodes = jsonData.get('number_of_nodes', 1)
+    stdout, stderr = submitFluxJob(jobName, jobCommand, dirName, options)
     
-    if not job:
-        return flask.jsonify({"error": "job is required"}), 400
+    if stderr:
+        return flask.jsonify({"error": stderr}), 500
     
-    # Connect to the flux instance and submit the job
-    handle = connectToFluxInstance(fluxInstance)
-        
-    # Create a new directory for the job
-    jobDirPath = f"{PWD}/{fluxInstance}/temp"
-    os.makedirs(jobDirPath, exist_ok=True)
-    os.chdir(jobDirPath)
+    jobid = convertF58toDecimal(stdout.rstrip('\n'))
     
-    if handle is None:
-        return flask.jsonify({"error": "Failed to connect to flux instance"}), 500
-    try:
-        if job['command'] is not None:
-            command = job['command']
-            jobspec = JobspecV1.from_command(command=command, cores_per_task=cores_per_task, num_tasks=number_of_tasks, num_nodes=number_of_nodes)
-            
-        jobspec.cwd = os.getcwd()
-        jobspec.environment = dict(os.environ)
-            
-        jobId = flux.job.submit(handle, jobspec).dec
+    return flask.jsonify({"message": "Job submitted successfully", "id": jobid}), 200
 
-        # Rename the temp directory to the job ID
-        os.rename(jobDirPath, f"{PWD}/{fluxInstance}/{jobId}")
-        print(MODIFY_FLUX_JSON_SCRIPT)
-        
-        subprocess.run(f"python3 {MODIFY_FLUX_JSON_SCRIPT} --add-job {fluxInstance} --job-id {jobId}", shell=True)
-        return flask.jsonify({"jobId": int(jobId)}), 200
-    except Exception as e:
-        return flask.jsonify({"error": str(e)}), 500
-
-@app.route('/flux/<fluxInstance>/job/script', methods=['POST'])
-def submitJobWithScript(fluxInstance):
-    """Submit a job to a specific flux instance."""
-    """
-    input: arguments
-    `main-script`: .sh or .py file (required)
-    `requirements`: requirements.txt file (optional)
-    `data`: data.csv file (optional)
-    `cores_per_task`: number of cores per task (optional)
-    `number_of_tasks`: number of tasks (optional)
-    `number_of_nodes`: number of nodes (optional)
-    """
-    
-    # Get the flux instance information
-    fluxInstanceInfo = getFluxInstanceInfo(fluxInstance)
-    if fluxInstanceInfo is None:
-        return flask.jsonify({"error": "fluxInstance does not exist"}), 404
-    # Get the job script from the request
-    if 'main-script' not in flask.request.files:
-        return flask.jsonify({'error': 'main-script is required'}), 400
-    
-    mainScript = flask.request.files['main-script']
-    
-    # Check if file was selected
-    if mainScript.filename == '':
-        return flask.jsonify({'error': 'No selected file for main-script'}), 400
-    
-    if 'requirements' in flask.request.files:
-        requirements = flask.request.files['requirements']
-    else:
-        requirements = None
-    
-    if 'data' in flask.request.files:
-        data = flask.request.files['data']
-    else:
-        data = None
-        
-    cores_per_task = flask.request.args.get('cores_per_task', 4)
-    number_of_tasks = flask.request.args.get('number_of_tasks', 1)
-    number_of_nodes = flask.request.args.get('number_of_nodes', 1)
-
-
-    # Save the main script/requirements/data to a temporary directory
-    tempDir = f"{PWD}/{fluxInstance}/temp{time.time()}"
-    os.makedirs(tempDir, exist_ok=True)
-    
-    mainScriptPath = f"{tempDir}/{mainScript.filename}"
-    requirementsPath = f"{tempDir}/requirements.txt"
-    dataPath = tempDir
-    
-    # Save the main script/requirements/data to the temporary directory and grant permission
-    if mainScript:
-        mainScript.save(mainScriptPath)
-        subprocess.run(f"chmod +x {mainScriptPath}", shell=True)
-    
-    if requirements:
-        requirements.save(requirementsPath)
-        subprocess.run(f"chmod +x {requirementsPath}", shell=True)
-    
-    if data:
-        data.save(dataPath)
-    
-    os.chdir(tempDir)
-    
-    # Connect to the flux instance and submit the job
-    handle = connectToFluxInstance(fluxInstance)
-    
-    if handle is None:
-        return flask.jsonify({"error": "Failed to connect to flux instance"}), 500
-    try:
-        # Install requirements if exists
-        if requirements:
-            subprocess.run(f"pip install -r {requirementsPath}", shell=True)
-        
-        # Create a jobspec from the job script
-
-        if mainScript.filename.endswith('.sh'):
-            command = [f"./{mainScript.filename}"]
-        elif mainScript.filename.endswith('.py'):
-            command = [f"python3 ./{mainScript.filename}"]
-        else:
-            return flask.jsonify({"error": "Invalid main script file type"}), 400
-            
-        jobspec = JobspecV1.from_command(command=command, cores_per_task=cores_per_task, num_tasks=number_of_tasks, num_nodes=number_of_nodes)
-        jobspec.cwd = os.getcwd()
-        jobspec.environment = dict(os.environ)
-        
-        def submit_callback(future, handle):
-            try:
-                jobId = future.get_id()
-                # Rename the temp directory to the job ID
-                result_fut = flux.job.result_async(handle, jobId)
-                # attach a callback to fire when the job finishes
-                result_fut.then(rename_temp_dir)
-            except Exception as e:
-                print(f"Error in callback: {str(e)}")
-                
-        def rename_temp_dir(future):
-            jobInfo = future.get_info()
-            os.rename(tempDir, f"{PWD}/{fluxInstance}/{jobInfo.id.dec}")
-        
-        future = flux.job.submit_async(handle, jobspec)
-        future.then(submit_callback, handle)
-        
-        handle.reactor_run()
-        
-        jobId = future.get_id()
-        subprocess.run(f"python3 {MODIFY_FLUX_JSON_SCRIPT} --add-job {fluxInstance} --job-id {jobId.dec}", shell=True)
-        
-        return flask.jsonify({"jobId": jobId}), 200
-    except Exception as e:
-        return flask.jsonify({"error": str(e)}), 500
-
-@app.route('/flux/<fluxInstance>/job/<jobID>/cancel', methods=['PUT'])
-def cancelJob(fluxInstance, jobID):
+@app.route('/flux/jobs/<jobID>/cancel', methods=['PUT'])
+def cancelJob(jobID):
     """Cancel a specific job."""
     """
     output:
@@ -505,25 +349,47 @@ def cancelJob(fluxInstance, jobID):
     }
     """
     
-    # Get the flux instance information
-    fluxInstanceInfo = getFluxInstanceInfo(fluxInstance)
-    if fluxInstanceInfo is None:
-        return flask.jsonify({"error": "fluxInstance does not exist"}), 404
+    result = subprocess.run(f"flux job cancel {jobID}", shell=True, capture_output=True, text=True)
     
-    # Connect to the flux instance and cancel the job
-    handle = connectToFluxInstance(fluxInstance)
-    if handle is None:
-        return flask.jsonify({"error": "Failed to connect to flux instance"}), 500
+    if result.stderr:
+        return flask.jsonify({"error": result.stderr}), 500
     
-    try:
-        flux.job.cancel(handle, jobID)
-        return flask.jsonify({"message": "Job cancelled successfully"}), 200
-    except Exception as e:
-        return flask.jsonify({"error": str(e)}), 500
+    return flask.jsonify({"message": "Job cancelled successfully"}), 200
 
+@app.route('/flux/jobs', methods=['GET'])
+def getJobs():
+    """Get all jobs."""
+    """
+    output:
+    {
+        "jobs": [
+            {
+            "id": 676292747853824,
+            "userid": 0,
+            "urgency": 16,
+            "priority": 16,
+            "t_submit": 1667760398.4034982,
+            "t_depend": 1667760398.4034982,
+            "state": "SCHED",
+            "name": "sleep",
+            "ntasks": 1,
+            "ncores": 1,
+            "duration": 0.0
+        },
+        ...
+        ]
+    }
+    """
+    
+    jobs = getFluxJobs()
+    
+    if jobs is []:
+        return flask.jsonify({"error": "No jobs found"}), 500
+    
+    return flask.jsonify({"jobs": jobs}), 200
 
-@app.route('/flux/<fluxInstance>/job/<jobID>/status', methods=['GET'])
-def getJobStatus(fluxInstance, jobID):
+@app.route('/flux/jobs/<jobID>', methods=['GET'])
+def getJob(jobID):
     """Get the status of a specific job."""
     """
     output:
@@ -544,31 +410,24 @@ def getJobStatus(fluxInstance, jobID):
     }
     """
     
-    # Get the flux instance information
-    fluxInstanceInfo = getFluxInstanceInfo(fluxInstance)
-    if fluxInstanceInfo is None:
-        return flask.jsonify({"error": "fluxInstance does not exist"}), 404
+    if jobID is None:
+        return flask.jsonify({"error": "Job ID is required"}), 400
     
-    # Connect to the flux instance and get the job status
-    handle = connectToFluxInstance(fluxInstance)
-    if handle is None:
-        return flask.jsonify({"error": "Failed to connect to flux instance"}), 500
+    job = getSpecificFluxJob(jobID)
     
-    # Get the job status
-    try:    
-        jobStatus = flux.job.get_job(handle, jobID)
-        return flask.jsonify({"job": jobStatus}), 200
-    except Exception as e:
-        return flask.jsonify({"error": str(e)}), 500
+    if job is None:
+        return flask.jsonify({"error": "Job not found"}), 404
+    
+    return flask.jsonify({"job": job}), 200
 
-@app.route('/flux/<fluxInstance>/job/<jobID>/result', methods=['GET'])
-def getJobResult(fluxInstance, jobID):
-    """Get the result of a specific job."""
+@app.route('/flux/jobs/<jobID>/output', methods=['GET'])
+def getJobOutput(jobID):
+    """Get the output of a specific job."""
     """
     output:
     {
-        "jobID": <job_id>,
-        "details": {
+        "result": {
+            "status": "success",
             "stdout": <stdout>,
             "stderr": <stderr>
         }
@@ -577,71 +436,79 @@ def getJobResult(fluxInstance, jobID):
     A zip file containing the job results and output files
     """
     
-    # Get the flux instance information
-    fluxInstanceInfo = getFluxInstanceInfo(fluxInstance)
+    job = getSpecificFluxJob(jobID)
     
-    if fluxInstanceInfo is None:
-        return flask.jsonify({"error": "fluxInstance does not exist"}), 404
+    if job is None:
+        return flask.jsonify({"error": "Job not found"}), 404
     
-    # Connect to the flux instance and get the job result
-    handle = connectToFluxInstance(fluxInstance)
-    if handle is None:
-        return flask.jsonify({"error": "Failed to connect to flux instance"}), 500
+    result = subprocess.run(f"flux job attach {jobID}", shell=True, capture_output=True, text=True)
+    
+    if flask.request.args.get('download') == 'true':
+        try:
+            # Download the job results and output files
+            zipFile = downloadFiles(jobID)
+            return flask.send_file(zipFile, as_attachment=True), 200
+        except Exception as e:
+            return flask.jsonify({"error": str(e)}), 500
+    
+    return flask.jsonify({"result": {"status": job.get('state'), "stdout": result.stdout, "stderr": result.stderr}}), 200
+
+@app.route('/flux/tree', methods=['GET'])
+def getJobTree():
+    """Get the tree of the cwd of a job."""
+    
+    dirName = flask.request.args.get('dirName')
+    if dirName is None:
+        return flask.jsonify({"error": "Directory name is required"}), 400
     
     try:
-        # Get job result as json object
-        jobResultObject = flux.job.result(handle, jobID)
-        jobResultJson = {
-            't_submit': jobResultObject.t_submit,
-            't_remaining': jobResultObject.t_remaining,
-            'result': jobResultObject.result,
-            'runtime': jobResultObject.runtime
-        }
-        saveFluxStreamOutputToFile(fluxInstance, jobID)
-        
-        # Check if output directory exists and has files
-        job_output_dir = f"{PWD}/{fluxInstance}/{jobID}"
-        
-        if flask.request.args.get('download') == 'true' and os.path.exists(job_output_dir) and os.listdir(job_output_dir):
-            # Create a memory file to store the zip
-            memory_file = io.BytesIO()
-            
-            # Create a zip file containing job results and output files
-            with zipfile.ZipFile(memory_file, 'w') as zf:
-                # Add job result as json file
-                result_json = json.dumps({
-                    "jobId": jobID,
-                    "details": jobResultJson
-                })
-                zf.writestr('job_result.json', result_json)
-                
-                # Add all files from the output directory
-                for root, _, files in os.walk(job_output_dir):
-                    for file in files:
-                        file_path = os.path.join(root, file)
-                        arc_name = os.path.relpath(file_path, job_output_dir)
-                        zf.write(file_path, arc_name)
-            
-            # Seek to the beginning of the memory file
-            memory_file.seek(0)
-            
-            return flask.send_file(
-                memory_file,
-                mimetype='application/zip',
-                as_attachment=True,
-                download_name=f'job_{jobID}_results.zip'
-            )
-        
-        # If no output files exist, return just the job result
-        return flask.jsonify({
-            "jobId": jobID,
-            "details": jobResultJson
-        }), 200
-        
+        tree = showTree(dirName)
+        return tree, 200
+    except Exception as e:
+        return flask.jsonify({"error": str(e)}), 500
+
+@app.route('/flux/files', methods=['POST'])
+def uploadFilesAPI():
+    """Upload files to the /data directory."""
+    
+    dirName = flask.request.args.get('dirName')
+    files = flask.request.files.getlist('files')  # Use getlist to handle multiple files
+    
+    if dirName is None:
+        return flask.jsonify({"error": "Directory name is required"}), 400
+    
+    if not files:
+        return flask.jsonify({"error": "No files uploaded"}), 400
+    
+    try:
+        message = uploadFiles(dirName, files)
+        return flask.jsonify({"message": message}), 200
+    except Exception as e:
+        return flask.jsonify({"error": str(e)}), 500
+    
+@app.route('/flux/files', methods=['DELETE'])
+def deleteFilesAPI():
+    """Delete files from the /data directory."""
+    
+    dirName = flask.request.args.get('dirName')
+    try:
+        message = deleteFiles(dirName)
+        return flask.jsonify({"message": message}), 200
+    except Exception as e:
+        return flask.jsonify({"error": str(e)}), 500
+
+@app.route('/flux/overlay', methods=['GET'])
+def getFluxOverlayStatus():
+    """Get the overlay status of the Flux handle."""
+    try:
+        status = showFluxOverlayStatus()
+        return status, 200
     except Exception as e:
         return flask.jsonify({"error": str(e)}), 500
 
 # Host the server at port 8080
 if __name__ == '__main__':
     subprocess.run(f"sudo chmod 777 -R {PWD}", shell=True)
+    
     app.run(host='0.0.0.0', port=8080)
+    database.init_db()
