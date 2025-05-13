@@ -447,7 +447,7 @@ def getJobOutput(jobID):
         try:
             # Download the job results and output files
             zipFile = downloadFiles(jobID)
-            return flask.send_file(zipFile, as_attachment=True), 200
+            return flask.send_file(f"{PWD}/{zipFile}", as_attachment=True), 200
         except Exception as e:
             return flask.jsonify({"error": str(e)}), 500
     
