@@ -11,7 +11,7 @@ import zipfile
 import pymongo
 import database
 
-PWD = os.getcwd()
+PWD = "/mnt/shared/flux"
 
 #########################################
 # UTILITIES FUNCTIONS
@@ -106,7 +106,7 @@ def submitFluxJob(jobName, jobCommand, dirName, options):
         nodes = f"-N {options.get('nodes', 1)}" if options.get('nodes', None) else ""
         
         # Per resource options
-        cores = f"--cores={options.get('cores', 6)}" if options.get('cores', None) else ""
+        cores = f"--cores={options.get('cores', 2)}" if options.get('cores', None) else ""
         tasks_per_node = f"--tasks-per-node={options.get('tasks-per-node', 1)}" if options.get('tasks-per-node', None) else ""
         tasks_per_core = f"--tasks-per-core={options.get('tasks-per-core', 1)}" if options.get('tasks-per-core', None) else ""
         
@@ -115,10 +115,10 @@ def submitFluxJob(jobName, jobCommand, dirName, options):
         gpus_per_task = f"-g {options.get('gpus-per-task', 1)}" if options.get('gpus-per-task', None) else ""
         ntasks = f"-n {options.get('ntasks', 1)}" if options.get('ntasks', None) else ""
         
-        os.makedirs(f"{PWD}/data/{dirName}", exist_ok=True)
-        os.chdir(f"{PWD}/data/{dirName}")
+        os.makedirs(f"{PWD}/{dirName}", exist_ok=True)
+        os.chdir(f"{PWD}/{dirName}")
         
-        result = subprocess.run(f"flux submit --cwd=/mnt/shared --job-name={jobName} {nodes} {cores_per_task} {gpus_per_task} {ntasks} {cores} {tasks_per_node} {tasks_per_core} {jobCommand}", shell=True, capture_output=True, text=True)
+        result = subprocess.run(f"flux submit --cwd={PWD}/{dirName} --job-name={jobName} {nodes} {cores_per_task} {gpus_per_task} {ntasks} {cores} {tasks_per_node} {tasks_per_core} {jobCommand}", shell=True, capture_output=True, text=True)
         os.chdir(PWD)
         return result.stdout, result.stderr
     except Exception as e:
@@ -131,7 +131,7 @@ def uploadFiles(dirName, files):
     """
     try:
         # Create a new directory for the files
-        os.makedirs(f"{PWD}/data/{dirName}", exist_ok=True)
+        os.makedirs(f"{PWD}/{dirName}", exist_ok=True)
         
         # Handle single file or multiple files
         if not isinstance(files, list):
@@ -140,7 +140,7 @@ def uploadFiles(dirName, files):
         # Save the files to the directory   
         for file in files:
             if file and file.filename:
-                file_path = os.path.join(f"{PWD}/data/{dirName}", file.filename)
+                file_path = os.path.join(f"{PWD}/{dirName}", file.filename)
                 file.save(file_path)
             
         return f"Uploaded {len(files)} files to {dirName} directory"
@@ -178,7 +178,7 @@ def deleteFiles(dirName):
     Delete files from the /data/<dirName> directory.
     """
     try:
-        shutil.rmtree(f"{PWD}/data/{dirName}")
+        shutil.rmtree(f"{PWD}/{dirName}")
         return f"Deleted {dirName} directory"
     except Exception as e:
         print(f"Error deleting files: {e}")
@@ -189,7 +189,7 @@ def showTree(dirName):
     Show the tree of the cwd of a directory.
     """
     try:
-        result = subprocess.run(f"tree -lah {PWD}/data/{dirName}", shell=True, capture_output=True, text=True)
+        result = subprocess.run(f"tree -lah {PWD}/{dirName}", shell=True, capture_output=True, text=True)
         
         if result.stderr:
             raise Exception(f"Error showing tree: {result.stderr}")
