@@ -118,7 +118,7 @@ def submitFluxJob(jobName, jobCommand, dirName, options):
         os.makedirs(f"{PWD}/{dirName}", exist_ok=True)
         os.chdir(f"{PWD}/{dirName}")
         
-        result = subprocess.run(f"flux submit --cwd={PWD}/{dirName} --job-name={jobName} {nodes} {cores_per_task} {gpus_per_task} {ntasks} {cores} {tasks_per_node} {tasks_per_core} {jobCommand}", shell=True, capture_output=True, text=True)
+        result = subprocess.run(f"flux submit --cwd={PWD}/{dirName} --job-name={jobName} {nodes} {cores_per_task} {gpus_per_task} {ntasks} {cores} {tasks_per_node} {tasks_per_core} bash -c \"{jobCommand}\"", shell=True, capture_output=True, text=True)
         os.chdir(PWD)
         return result.stdout, result.stderr
     except Exception as e:
